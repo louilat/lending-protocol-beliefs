@@ -195,7 +195,7 @@ class BeliefModel:
     def stablecoin_interest_rate(self, us: float) -> float:
         if not (0 <= us <= 1):
             raise ValueError(f"us must be between 0 and 1, got {us}")
-        rs = self.irm_crypto(us)
+        rs = self.irm_stablecoin(us)
         if rs < 0:
             raise ValueError(f"rs must be positive, got {rs}")
         return rs
@@ -297,7 +297,7 @@ class BeliefModel:
         """
         self.solve_traders_problem(uc=uc, us=us)
         rc = self.crypto_interest_rate(uc)
-        rs = self.crypto_interest_rate(us)
+        rs = self.stablecoin_interest_rate(us)
         lending_crypto = self.exogenous_supply_crypto(rc)
         lending_stablecoin = self.exogenous_supply_stablecoin(rs)
         uc_market = min(
