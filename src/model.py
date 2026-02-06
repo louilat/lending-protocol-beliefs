@@ -75,6 +75,13 @@ class BeliefModel:
         exogenous_supply_crypto: Callable[[float], float] = lambda x: 0.1 + 0.1 * x,
         exogenous_supply_stablecoin: Callable[[float], float] = lambda x: 0.1 + 0.1 * x,
         size_pop_traders: int = 250,
+        # ---- NEW (optional): bimodal belief distribution ----
+        bimodal_beliefs: bool = False,
+        mix_pi: float = 0.5,
+        mean1: float | None = None,
+        std1: float | None = None,
+        mean2: float | None = None,
+        std2: float | None = None,
     ):
         """
         Initializes the belief-based lending model.
@@ -113,6 +120,12 @@ class BeliefModel:
             Number of representative traders in the population (each representative
             trader is weighted by a probability mass so that the effective number of traders
             is one).
+        bimodal_beliefs : bool, optional
+            If True, use a bimodal mixture of two normals for beliefs; otherwise normal.
+        mix_pi : float, optional
+            Mixture weight on the first mode (0<mix_pi<1).
+        mean1, std1, mean2, std2 : float, optional
+            Parameters for the two modes if bimodal_beliefs=True.
 
         Raises
         ------
@@ -153,10 +166,18 @@ class BeliefModel:
         if gamma <= 0:
             raise ValueError(f"gamma should be positive, got {gamma}")
         self.gamma = gamma
+
+        # ---- only change is here: pass optional bimodal args (defaults keep normal) ----
         self.traders_population = _create_traders_population(
             size_pop=size_pop_traders,
             mean_beliefs=mean_beliefs,
             std_beliefs=std_beliefs,
+            bimodal=bimodal_beliefs,
+            mix_pi=mix_pi,
+            mean1=mean1,
+            std1=std1,
+            mean2=mean2,
+            std2=std2,
         )
 
         self.irm_crypto = irm_crypto
@@ -169,21 +190,6 @@ class BeliefModel:
     def crypto_interest_rate(self, uc: float) -> float:
         """
         Computes the crypto interest rate given the utilization ratio.
-
-        Parameters
-        ----------
-        uc : float
-            Utilization ratio of the crypto market (between 0 and 1).
-
-        Returns
-        -------
-        float
-            Crypto lending interest rate.
-
-        Raises
-        ------
-        ValueError
-            If utilization is outside [0, 1] or the resulting rate is negative.
         """
         if not (0 <= uc <= 1):
             raise ValueError(f"uc must be between 0 and 1, got {uc}")
@@ -203,21 +209,6 @@ class BeliefModel:
     def solve_traders_problem(self, uc: float, us: float) -> None:
         """
         Solves each trader's portfolio optimization problem given utilization ratios.
-
-        This method updates traders' portfolio weights and computes the aggregated
-        borrowing and collateral levels in the protocol.
-
-        Parameters
-        ----------
-        uc : float
-            Crypto utilization ratio.
-        us : float
-            Stablecoin utilization ratio.
-
-        Raises
-        ------
-        ValueError
-            If utilization ratios are outside [0, 1].
         """
         if not ((0 <= uc <= 1) and (0 <= us <= 1)):
             raise ValueError(f"uc and us must be between 0 and 1, got {uc} and {us}")
@@ -241,18 +232,6 @@ class BeliefModel:
     def _optimize_trader_portfolio(self, trader: Trader, uc: float, us: float) -> None:
         """
         Solves the individual trader's optimal portfolio allocation problem.
-
-        The trader maximizes a mean-variance utility subject to borrowing and
-        collateral constraints induced by utilization ratios.
-
-        Parameters
-        ----------
-        trader : Trader
-            Trader whose portfolio is optimized.
-        uc : float
-            Crypto utilization ratio.
-        us : float
-            Stablecoin utilization ratio.
         """
         rc = self.crypto_interest_rate(uc)
         rs = self.stablecoin_interest_rate(us)
@@ -279,21 +258,7 @@ class BeliefModel:
     ) -> tuple[float, float]:
         """
         Computes market utilization ratios implied by traders' optimal behavior and
-        exogenous lending:
-
-        utiliszation = borrow / (collat + exogenous_lending)
-
-        Parameters
-        ----------
-        uc : float
-            Initial crypto utilization ratio.
-        us : float
-            Initial stablecoin utilization ratio.
-
-        Returns
-        -------
-        tuple[float, float]
-            Updated utilization ratios (uc_market, us_market).
+        exogenous lending.
         """
         self.solve_traders_problem(uc=uc, us=us)
         rc = self.crypto_interest_rate(uc)
@@ -315,14 +280,6 @@ class BeliefModel:
     def compute_equilibrium_utilization_ratios(self):
         """
         Computes equilibrium utilization ratios as a fixed point.
-
-        The equilibrium is defined by utilization ratios that are consistent
-        with traders' optimal portfolio choices and market clearing.
-
-        Returns
-        -------
-        tuple[float, float]
-            Equilibrium crypto and stablecoin utilization ratios.
         """
         uc_0, us_0 = 0.5, 0.5
 
@@ -335,6 +292,75 @@ class BeliefModel:
         equilibrium = root(f, x0=[uc_0, us_0], method="hybr")
         zc_eq, zs_eq = equilibrium.x
         return sigmoid(zc_eq), sigmoid(zs_eq)
+
+
+def _mix_pdf(x, pi, m1, s1, m2, s2):
+    return pi * norm.pdf(x, loc=m1, scale=s1) + (1 - pi) * norm.pdf(x, loc=m2, scale=s2)
+
+
+def _create_traders_population(
+    size_pop: int,
+    mean_beliefs: float,
+    std_beliefs: float,
+    bimodal: bool = False,
+    mix_pi: float = 0.5,
+    mean1: float | None = None,
+    std1: float | None = None,
+    mean2: float | None = None,
+    std2: float | None = None,
+) -> list[Trader]:
+
+    if size_pop <= 0:
+        raise ValueError("size_pop must be positive")
+    if std_beliefs <= 0:
+        raise ValueError("std_beliefs must be positive")
+
+    if not bimodal:
+        # Normal grid: keep your +/- 3 sigma grid, but FIX weights (use PDF not CDF)
+        support = np.linspace(
+            mean_beliefs - 3 * std_beliefs,
+            mean_beliefs + 3 * std_beliefs,
+            size_pop,
+        )
+        w = norm.pdf(support, loc=mean_beliefs, scale=std_beliefs)
+        w = w / w.sum()
+
+    else:
+        # Defaults for mixture if not provided
+        if mean1 is None:
+            mean1 = mean_beliefs - 1.0 * std_beliefs
+        if mean2 is None:
+            mean2 = mean_beliefs + 1.0 * std_beliefs
+        if std1 is None:
+            std1 = 0.6 * std_beliefs
+        if std2 is None:
+            std2 = 0.6 * std_beliefs
+
+        if not (0.0 < mix_pi < 1.0):
+            raise ValueError("mix_pi must be in (0,1)")
+        if std1 <= 0 or std2 <= 0:
+            raise ValueError("std1 and std2 must be positive")
+
+        lo = min(mean1 - 6 * std1, mean2 - 6 * std2)
+        hi = max(mean1 + 6 * std1, mean2 + 6 * std2)
+        support = np.linspace(lo, hi, size_pop)
+
+        w = _mix_pdf(support, mix_pi, mean1, std1, mean2, std2)
+        w = np.maximum(w, 0.0)
+        w = w / w.sum()
+
+    traders = []
+    for i, mu_i in enumerate(support):
+        traders.append(
+            Trader(
+                i,
+                float(mu_i),  
+                float(w[i]),    
+                float("nan"),
+                float("nan"),
+            )
+        )
+    return traders
 
 
 def _compute_aggregated_borrows_and_collateral(
@@ -362,43 +388,3 @@ def _compute_aggregated_borrows_and_collateral(
         collat_stablecoin,
         borrow_stablecoin,
     )
-
-
-def _create_traders_population(
-    size_pop: int, mean_beliefs: float, std_beliefs: float
-) -> list[Trader]:
-    """
-    Generates a population of traders with heterogeneous beliefs.
-
-    Beliefs are discretized over a normal distribution support and weighted
-    by the corresponding CDF mass.
-
-    Parameters
-    ----------
-    size_pop : int
-        Number of traders.
-    mean_beliefs : float
-        Mean belief about crypto returns.
-    std_beliefs : float
-        Standard deviation of beliefs.
-
-    Returns
-    -------
-    list[Trader]
-        List of initialized traders.
-    """
-    support = np.linspace(
-        mean_beliefs - 3 * std_beliefs, mean_beliefs + 3 * std_beliefs, size_pop
-    )
-    traders = []
-    for i, k in enumerate(support):
-        traders.append(
-            Trader(
-                i,
-                k,
-                norm.cdf(k, loc=mean_beliefs, scale=std_beliefs),
-                float("nan"),
-                float("nan"),
-            )
-        )
-    return traders
