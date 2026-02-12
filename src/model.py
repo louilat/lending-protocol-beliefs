@@ -371,7 +371,7 @@ def _create_traders_population(
     Generates a population of traders with heterogeneous beliefs.
 
     Beliefs are discretized over a normal distribution support and weighted
-    by the corresponding CDF mass.
+    by the PDF evaluated at each support point (normalized so weights sum to 1).
 
     Parameters
     ----------
@@ -387,18 +387,34 @@ def _create_traders_population(
     list[Trader]
         List of initialized traders.
     """
+
+    # Discretization grid
     support = np.linspace(
-        mean_beliefs - 3 * std_beliefs, mean_beliefs + 3 * std_beliefs, size_pop
+        mean_beliefs - 3 * std_beliefs,
+        mean_beliefs + 3 * std_beliefs,
+        size_pop
     )
-    traders = []
-    for i, k in enumerate(support):
+
+    # Evaluate density
+    pdf_vals = norm.pdf(
+        support,
+        loc=mean_beliefs,
+        scale=std_beliefs
+    )
+
+    # Normalize weights so total population mass = 1
+    weights = pdf_vals / pdf_vals.sum()
+
+    traders: list[Trader] = []
+    for i, mu_i in enumerate(support):
         traders.append(
             Trader(
-                i,
-                k,
-                norm.cdf(k, loc=mean_beliefs, scale=std_beliefs),
+                int(i),
+                float(mu_i),
+                float(weights[i]),
                 float("nan"),
                 float("nan"),
             )
         )
+
     return traders
