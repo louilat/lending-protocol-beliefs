@@ -298,16 +298,16 @@ class BeliefModel:
         self.solve_traders_problem(uc=uc, us=us)
         rc = self.crypto_interest_rate(uc)
         rs = self.stablecoin_interest_rate(us)
-        lending_crypto = self.exogenous_supply_crypto(rc)
-        lending_stablecoin = self.exogenous_supply_stablecoin(rs)
+        self.lending_crypto = self.exogenous_supply_crypto(rc)
+        self.lending_stablecoin = self.exogenous_supply_stablecoin(rs)
         uc_market = min(
-            1, max(0, self.borrow_crypto / (self.collat_crypto + lending_crypto))
+            1, max(0, self.borrow_crypto / (self.collat_crypto + self.lending_crypto))
         )
         us_market = min(
             1,
             max(
                 0,
-                self.borrow_stablecoin / (self.collat_stablecoin + lending_stablecoin),
+                self.borrow_stablecoin / (self.collat_stablecoin + self.lending_stablecoin),
             ),
         )
         return uc_market, us_market
